@@ -34,11 +34,11 @@ class Result:
 
 
 session = requests.Session()
-session.headers.update(
-    {
-        "User-Agent": "MirrorFuzzer/1.0"
-    }
-)
+session.headers.update({
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+})
 
 
 def load_words(path: str | None) -> list[str]:
@@ -108,6 +108,60 @@ def extract_paths_from_mirror(mirrors: list[str], timeout: int) -> list[str]:
 
                 if path not in visited:
                     queue.append(path)
+
+    return sorted(discovered)
+
+def extract_paths_from_target(
+    target: str,
+    seeds: list[str],
+    timeout: int,
+) -> list[str]:
+
+    discovered: set[str] = set()
+    visited: set[str] = set()
+
+    # usa os paths descobertos nos mirrors como ponto de partida
+    queue = list(seeds)
+
+    while queue:
+
+        current_path = queue.pop(0)
+
+        if current_path in visited:
+            continue
+
+        visited.add(current_path)
+
+        url = normalize_url(target, current_path)
+        result = fetch(url, timeout)
+
+        if result is None or result.status != 200:
+            continue
+
+        discovered.add(current_path)
+
+        hrefs = re.findall(
+            r'href=["\']([^"\']+)["\']',
+            result.body,
+            re.IGNORECASE,
+        )
+
+        for href in hrefs:
+
+            if href.startswith(("#", "mailto:", "javascript:")):
+                continue
+
+            absolute = urljoin(url, href)
+            parsed = urlparse(absolute)
+
+            # ignora links externos
+            if parsed.netloc != urlparse(target).netloc:
+                continue
+
+            path = parsed.path or "/"
+
+            if path not in visited:
+                queue.append(path)
 
     return sorted(discovered)
 
@@ -191,29 +245,52 @@ def compare(target: Result | None, mirror: Result | None, path: str):
         print(f"    {mirror.url}")
         print()
 
+def execute(url: str, mirrors: list[str], wordlist: str | None, timeout: int):
 
-def execute(url, mirrors, wordlist, timeout):
-
-    # Fase 1 - descoberta
+    # Paths vindos da wordlist
     all_paths = set(load_words(wordlist))
 
+    #
+    # Fase 1 - Crawl dos mirrors
+    #
     print("[*] Crawling dos mirrors...")
 
-    for mirror in mirrors:
-        paths = extract_paths_from_mirror([mirror], timeout)
+    mirror_paths = extract_paths_from_mirror(mirrors, timeout)
 
-        print(f"[+] {mirror}: {len(paths)} paths")
+    print(f"[*] Paths descobertos nos mirrors: {len(mirror_paths)}")
 
-        all_paths.update(paths)
+    all_paths.update(mirror_paths)
 
+    #
+    # Fase 2 - Crawl do target usando os paths dos mirrors como seed
+    #
+    print("[*] Crawling do target usando os paths dos mirrors...")
+
+    target_paths = extract_paths_from_target(
+        target=url,
+        seeds=mirror_paths,
+        timeout=timeout,
+    )
+
+    print(f"[*] Paths descobertos no target: {len(target_paths)}")
+
+    all_paths.update(target_paths)
+
+    #
+    # União final
+    #
     all_paths = sorted(all_paths)
 
     if "/" not in all_paths:
         all_paths.insert(0, "/")
 
+    print()
     print(f"[*] Total final de paths: {len(all_paths)}")
+    print()
 
-    # Fase 2 - comparação
+    #
+    # Fase 3 - Apenas validação no target
+    #
     for path in all_paths:
 
         target_url = normalize_url(url, path)
@@ -225,18 +302,6 @@ def execute(url, mirrors, wordlist, timeout):
                 f"{target_result.length} bytes -> {path}"
             )
 
-        for mirror in mirrors:
-
-            mirror_url = normalize_url(mirror, path)
-            mirror_result = fetch(mirror_url, timeout)
-
-            if mirror_result:
-                print(
-                    f"    [MIRROR] {mirror_result.status} "
-                    f"{mirror_result.length} bytes"
-                )
-
-            compare(target_result, mirror_result, path)
 def main():
     parser = argparse.ArgumentParser(description="Mirror Fuzzer")
 
