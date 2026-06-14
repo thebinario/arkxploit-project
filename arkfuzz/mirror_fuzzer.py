@@ -55,22 +55,31 @@ def load_words(path: str | None) -> list[str]:
 
 def extract_paths_from_mirror(mirrors: list[str], timeout: int) -> list[str]:
     """
-    Extrai paths a partir dos mirrors via crawling de links <a href=...>
-    e directory listings. Retorna lista de paths únicos.
+    Faz crawl dos mirrors.
+
+    Diretórios:
+        usados apenas para continuar a navegação.
+
+    Arquivos:
+        adicionados em discovered e serão testados no target.
     """
+
     discovered: set[str] = set()
 
     for mirror in mirrors:
+
         queue = ["/"]
         visited: set[str] = set()
+        mirror_host = urlparse(mirror).netloc
 
         while queue:
+
             current_path = queue.pop(0)
 
             if current_path in visited:
                 continue
+
             visited.add(current_path)
-            discovered.add(current_path)
 
             url = normalize_url(mirror, current_path)
             result = fetch(url, timeout)
@@ -78,36 +87,45 @@ def extract_paths_from_mirror(mirrors: list[str], timeout: int) -> list[str]:
             if result is None or result.status != 200:
                 continue
 
-            # Extrai hrefs da resposta
             hrefs = re.findall(
                 r'href=["\']([^"\']+)["\']',
                 result.body,
-                re.IGNORECASE
+                re.IGNORECASE,
             )
+
             print(f"[DEBUG] {url} -> {len(hrefs)} hrefs")
+
             for href in hrefs:
 
-                if href.startswith("#"):
-                    continue
-
-                if href.startswith("mailto:"):
-                    continue
-
-                if href.startswith("javascript:"):
+                if href.startswith(("#", "mailto:", "javascript:")):
                     continue
 
                 absolute = urljoin(url, href)
                 parsed = urlparse(absolute)
 
-                mirror_host = urlparse(mirror).netloc
-
+                # ignora links externos
                 if parsed.netloc != mirror_host:
                     continue
 
                 path = parsed.path or "/"
 
-                if path not in visited:
-                    queue.append(path)
+                # ignora parent directory
+                if path.endswith("/.."):
+                    continue
+
+                #
+                # Diretório -> continua crawl
+                #
+                if href.endswith("/") or path.endswith("/"):
+
+                    if path not in visited:
+                        queue.append(path)
+
+                #
+                # Arquivo -> guarda para testar no target
+                #
+                else:
+                    discovered.add(path)
 
     return sorted(discovered)
 
